@@ -1,0 +1,26 @@
+# AI Risk Manager — Python dependencies
+# Generated from: pip freeze (Python 3.13, venv)
+# Install with: pip install -r requirements.txt
+
+# ── API ───────────────────────────────────────────────────────────────────────
+fastapi==0.141.1
+uvicorn==0.52.4
+starlette==1.6.0
+pydantic==2.13.5
+pydantic_core==2.46.5
+httpx==0.28.1          # FastAPI TestClient dependency
+anyio==4.15.0          # async support for uvicorn
+
+# ── ML / Data ─────────────────────────────────────────────────────────────────
+xgboost==2.1.4
+lightgbm==4.5.0
+scikit-learn==1.6.1
+pandas==3.0.5
+numpy==2.5.2
+joblib==1.6.0          # model serialisation (used by scikit-learn internally)
+
+# ── Data generation ───────────────────────────────────────────────────────────
+Faker==26.0.0
+
+# ── Testing ───────────────────────────────────────────────────────────────────
+pytest==9.1.1
