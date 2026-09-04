@@ -17,15 +17,26 @@ Usage:
     # Then visit: http://127.0.0.1:8000/docs
 """
 
+import logging
 import os
 import sys
 import pickle
+import time
 from datetime import datetime, timezone
-from typing import List
+from typing import List, Optional
 
 import pandas as pd
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Security
+from fastapi.security.api_key import APIKeyHeader
 from pydantic import BaseModel, Field, field_validator
+
+# ── Logging setup ──────────────────────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger("ai_risk_manager")
 
 # ── Path setup ─────────────────────────────────────────────────────────────────
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -56,47 +67,80 @@ from src.chargeback_features import (
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# API key authentication
+# ══════════════════════════════════════════════════════════════════════════════
+
+API_KEY        = os.environ.get("API_KEY", "")
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+if not API_KEY:
+    logger.warning(
+        "API_KEY environment variable is not set. "
+        "Server is running in open mode — all requests will be accepted. "
+        "Set API_KEY before deploying."
+    )
+
+
+def verify_api_key(key: Optional[str] = Security(api_key_header)) -> None:
+    """Reject requests with a missing or wrong API key (when API_KEY is set)."""
+    if not API_KEY:
+        return  # open mode — no key required
+    if key != API_KEY:
+        logger.warning("Rejected request — invalid or missing API key")
+        raise HTTPException(status_code=401, detail="Invalid or missing API key.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Model loading — all three models loaded once at server startup
 # ══════════════════════════════════════════════════════════════════════════════
+
+def _resolve_model_path(env_var: str, default_relative: str) -> str:
+    """Return model path from env variable, or fall back to default."""
+    return os.environ.get(env_var, os.path.join(ROOT, default_relative))
+
 
 def _load_pkl(path: str, train_cmd: str):
     if not os.path.exists(path):
         raise FileNotFoundError(
             f"Model file not found at {path}. Run `{train_cmd}` first."
         )
+    logger.info(f"Loading model from {path}")
     with open(path, "rb") as f:
         return pickle.load(f)
 
 
 # Phase 1 — Return Risk Scorer
 return_model_obj  = _load_pkl(
-    os.path.join(ROOT, "models", "return_risk_model.pkl"),
+    _resolve_model_path("RETURN_MODEL_PATH", "models/return_risk_model.pkl"),
     "python src/train.py",
 )
 RETURN_MODEL      = return_model_obj["model"]
 RETURN_THRESHOLD  = return_model_obj["threshold"]
 RETURN_MODEL_NAME = return_model_obj["model_name"]
 RETURN_METRICS    = return_model_obj["metrics"]
+logger.info(f"Return risk model loaded: {RETURN_MODEL_NAME}  threshold={RETURN_THRESHOLD}")
 
 # Phase 2 — Fraud Transaction Scorer
 fraud_model_obj  = _load_pkl(
-    os.path.join(ROOT, "models", "fraud_risk_model.pkl"),
+    _resolve_model_path("FRAUD_MODEL_PATH", "models/fraud_risk_model.pkl"),
     "python src/fraud_train.py",
 )
 FRAUD_MODEL      = fraud_model_obj["model"]
 FRAUD_THRESHOLD  = fraud_model_obj["threshold"]
 FRAUD_MODEL_NAME = fraud_model_obj["model_name"]
 FRAUD_METRICS    = fraud_model_obj["metrics"]
+logger.info(f"Fraud model loaded:       {FRAUD_MODEL_NAME}  threshold={FRAUD_THRESHOLD}")
 
 # Phase 3 — Chargeback Evidence Responder
 cb_model_obj  = _load_pkl(
-    os.path.join(ROOT, "models", "chargeback_model.pkl"),
+    _resolve_model_path("CHARGEBACK_MODEL_PATH", "models/chargeback_model.pkl"),
     "python src/chargeback_train.py",
 )
 CB_MODEL      = cb_model_obj["model"]
 CB_THRESHOLD  = cb_model_obj["threshold"]
 CB_MODEL_NAME = cb_model_obj["model_name"]
 CB_METRICS    = cb_model_obj["metrics"]
+logger.info(f"Chargeback model loaded:  {CB_MODEL_NAME}  threshold={CB_THRESHOLD}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -170,6 +214,21 @@ app = FastAPI(
     ),
     version="3.0.0",
 )
+
+
+# ── Request logging middleware ─────────────────────────────────────────────────
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """Log every incoming request with method, path, status code, and latency."""
+    start = time.perf_counter()
+    response = await call_next(request)
+    latency_ms = (time.perf_counter() - start) * 1000
+    logger.info(
+        f"{request.method}  {request.url.path}  "
+        f"status={response.status_code}  latency={latency_ms:.1f}ms"
+    )
+    return response
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -454,7 +513,7 @@ def root():
 
 @app.get("/model/return/info", response_model=ModelInfoResponse,
          summary="Return risk model metadata and metrics")
-def return_model_info():
+def return_model_info(_: None = Security(verify_api_key)):
     return ModelInfoResponse(
         model_name=RETURN_MODEL_NAME, threshold=RETURN_THRESHOLD,
         precision=round(RETURN_METRICS["precision"], 4),
@@ -473,7 +532,7 @@ def return_model_info():
 
 @app.get("/model/fraud/info", response_model=ModelInfoResponse,
          summary="Fraud model metadata and metrics")
-def fraud_model_info():
+def fraud_model_info(_: None = Security(verify_api_key)):
     return ModelInfoResponse(
         model_name=FRAUD_MODEL_NAME, threshold=FRAUD_THRESHOLD,
         precision=round(FRAUD_METRICS["precision"], 4),
@@ -492,7 +551,7 @@ def fraud_model_info():
 
 @app.get("/model/chargeback/info", response_model=ModelInfoResponse,
          summary="Chargeback model metadata and metrics")
-def chargeback_model_info():
+def chargeback_model_info(_: None = Security(verify_api_key)):
     return ModelInfoResponse(
         model_name=CB_MODEL_NAME, threshold=CB_THRESHOLD,
         precision=round(CB_METRICS["precision"], 4),
@@ -511,7 +570,7 @@ def chargeback_model_info():
 
 @app.post("/score/return", response_model=ScoreResponse,
           summary="Score a return request (Phase 1)")
-def score_return(request: ReturnRequest):
+def score_return(request: ReturnRequest, _: None = Security(verify_api_key)):
     """Score a return request as Low / Medium / High risk."""
     try:
         row = {
@@ -544,6 +603,7 @@ def score_return(request: ReturnRequest):
         X          = pd.DataFrame([row])[RETURN_FEATURE_COLUMNS]
         risk_score = float(RETURN_MODEL.predict_proba(X)[0][1])
         risk_label = score_to_label(risk_score)
+        logger.info(f"score/return  score={risk_score:.4f}  label={risk_label}")
         return ScoreResponse(
             risk_score=round(risk_score, 4), risk_label=risk_label,
             recommendation=RETURN_RECOMMENDATIONS[risk_label],
@@ -551,12 +611,13 @@ def score_return(request: ReturnRequest):
             scored_at=datetime.now(timezone.utc).isoformat(),
         )
     except Exception as e:
+        logger.error(f"score/return failed: {e}")
         raise HTTPException(status_code=500, detail=f"Scoring failed: {str(e)}")
 
 
 @app.post("/score/transaction", response_model=ScoreResponse,
           summary="Score a payment transaction for fraud (Phase 2)")
-def score_transaction(request: TransactionRequest):
+def score_transaction(request: TransactionRequest, _: None = Security(verify_api_key)):
     """Score a payment transaction as Low / Medium / High fraud risk."""
     try:
         row = {
@@ -592,6 +653,7 @@ def score_transaction(request: TransactionRequest):
         X          = pd.DataFrame([row])[FRAUD_FEATURE_COLUMNS]
         risk_score = float(FRAUD_MODEL.predict_proba(X)[0][1])
         risk_label = score_to_label(risk_score)
+        logger.info(f"score/transaction  score={risk_score:.4f}  label={risk_label}")
         return ScoreResponse(
             risk_score=round(risk_score, 4), risk_label=risk_label,
             recommendation=FRAUD_RECOMMENDATIONS[risk_label],
@@ -599,12 +661,13 @@ def score_transaction(request: TransactionRequest):
             scored_at=datetime.now(timezone.utc).isoformat(),
         )
     except Exception as e:
+        logger.error(f"score/transaction failed: {e}")
         raise HTTPException(status_code=500, detail=f"Scoring failed: {str(e)}")
 
 
 @app.post("/chargeback/analyze", response_model=ChargebackAnalysisResponse,
           summary="Analyze a chargeback dispute and return evidence report (Phase 3)")
-def analyze_chargeback(request: ChargebackRequest):
+def analyze_chargeback(request: ChargebackRequest, _: None = Security(verify_api_key)):
     """
     Analyze a chargeback dispute and return:
     - Winability score and label (Weak / Moderate / Strong)
@@ -669,6 +732,10 @@ def analyze_chargeback(request: ChargebackRequest):
             EVIDENCE_LABELS[k] for k, v in evidence_flags.items() if not v
         ]
 
+        logger.info(
+            f"chargeback/analyze  score={winability_score:.4f}  "
+            f"label={winability_label}  evidence={len(evidence_present)}/7"
+        )
         return ChargebackAnalysisResponse(
             winability_score=round(winability_score, 4),
             winability_label=winability_label,
@@ -682,4 +749,5 @@ def analyze_chargeback(request: ChargebackRequest):
         )
 
     except Exception as e:
+        logger.error(f"chargeback/analyze failed: {e}")
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
