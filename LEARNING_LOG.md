@@ -5,7 +5,7 @@
 
 ---
 
-## Session 1 — 2026-09-03
+## Session 1 — 2026-08-31
 
 ### What We Built Today
 
@@ -307,7 +307,7 @@ AI-Risk-Manager/
 
 ---
 
-## Session 2 — 2026-09-04
+## Session 2 — 2026-09-02
 
 ### What We Built Today
 
@@ -555,40 +555,3 @@ A domain-knowledge-based float (0.0 to 1.0) that captures how inherently hard ea
 
 ---
 
-## Current Status
-
-| Phase | Module | Status |
-|-------|--------|--------|
-| Phase 1 | Return Risk Scorer | ✅ Complete |
-| Phase 2 | Fraud Transaction Scorer | ✅ Complete |
-| Phase 3 | Chargeback Evidence Responder | ✅ Complete |
-| Phase 4 | Abuse Ring Sentinel | 📋 Planned |
-
-| File | Status |
-|------|--------|
-| `data/generate_data.py` | ✅ |
-| `data/generate_fraud_data.py` | ✅ |
-| `data/generate_chargeback_data.py` | ✅ |
-| `data/raw/returns.csv` | ✅ 10,000 records |
-| `data/raw/transactions.csv` | ✅ 10,000 records |
-| `data/raw/chargebacks.csv` | ✅ 8,000 records |
-| `notebooks/exploration.ipynb` | ✅ |
-| `notebooks/exploration_fraud.ipynb` | ✅ |
-| `notebooks/exploration_chargeback.ipynb` | ✅ |
-| `src/features.py` | ✅ |
-| `src/fraud_features.py` | ✅ |
-| `src/chargeback_features.py` | ✅ |
-| `src/train.py` | ✅ |
-| `src/fraud_train.py` | ✅ |
-| `src/chargeback_train.py` | ✅ |
-| `models/return_risk_model.pkl` | ✅ |
-| `models/fraud_risk_model.pkl` | ✅ |
-| `models/chargeback_model.pkl` | ✅ |
-| `api/main.py` | ✅ v3.0.0 — all 3 phases |
-| `tests/test_model.py` | ✅ 28 tests |
-| `tests/test_fraud_model.py` | ✅ 23 tests |
-| `tests/test_chargeback_model.py` | ✅ 28 tests |
-
----
-
-*Log maintained by Kiro. Updated at end of each session.*
