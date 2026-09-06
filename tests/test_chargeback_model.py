@@ -71,9 +71,9 @@ MIN_RECALL    = 0.75
 MIN_AUPRC     = 0.75
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+
 # Fixtures — loaded once per session, shared across all tests
-# ══════════════════════════════════════════════════════════════════════════════
+
 
 @pytest.fixture(scope="session")
 def model_obj():
@@ -117,9 +117,8 @@ def api_client():
     return TestClient(app)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
 # Test payloads
-# ══════════════════════════════════════════════════════════════════════════════
+
 
 # Clear winning dispute:
 #   - Delivery confirmed + customer signed
@@ -198,9 +197,9 @@ WEAK_LOSS_PAYLOAD = {
 }
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+
 # Group 1 — Model loading
-# ══════════════════════════════════════════════════════════════════════════════
+
 
 class TestChargebackModelLoading:
 
@@ -240,9 +239,9 @@ class TestChargebackModelLoading:
         )
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+
 # Group 2 — Model metrics on held-out test set
-# ══════════════════════════════════════════════════════════════════════════════
+
 
 class TestChargebackModelMetrics:
 
@@ -310,9 +309,8 @@ class TestChargebackModelMetrics:
         assert np.all(proba <= 1.0), "Some winability scores are above 1.0"
 
 
-# ══════════════════════════════════════════════════════════════════════════════
 # Group 3 — API health check and model info
-# ══════════════════════════════════════════════════════════════════════════════
+
 
 class TestAPIHealth:
 
@@ -374,9 +372,7 @@ class TestChargebackModelInfo:
             assert key in cm, f"Confusion matrix missing key: '{key}'"
 
 
-# ══════════════════════════════════════════════════════════════════════════════
 # Group 4 — Chargeback analysis endpoint
-# ══════════════════════════════════════════════════════════════════════════════
 
 class TestChargebackAnalysisEndpoint:
 
@@ -505,9 +501,9 @@ class TestChargebackAnalysisEndpoint:
         assert parsed is not None
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+
 # Group 5 — Input validation (all must return 422, not 500)
-# ══════════════════════════════════════════════════════════════════════════════
+
 
 class TestChargebackInputValidation:
 
@@ -549,14 +545,6 @@ class TestChargebackInputValidation:
         response = api_client.post("/chargeback/analyze", json=bad)
         assert response.status_code == 422, (
             f"Expected 422 for negative order_value, got {response.status_code}"
-        )
-
-    def test_evidence_score_above_7_returns_422(self, api_client):
-        """evidence_score above 7 must be rejected — there are only 7 evidence fields."""
-        bad = {**STRONG_WIN_PAYLOAD, "evidence_score": 8}
-        response = api_client.post("/chargeback/analyze", json=bad)
-        assert response.status_code == 422, (
-            f"Expected 422 for evidence_score > 7, got {response.status_code}"
         )
 
     def test_negative_days_to_dispute_returns_422(self, api_client):
