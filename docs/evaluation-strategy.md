@@ -6,7 +6,7 @@ The most important rule in this project:
 
 > **Accuracy is a useless metric for fraud and risk detection.**
 
-Here's why. Suppose only 1% of transactions are fraud. A model that flags nothing at all — that just says "not fraud" for every single transaction — has 99% accuracy. But it catches zero fraud cases. It is completely useless.
+Here's why. Suppose only 1% of transactions are fraud. A model that flags nothing at all  that just says "not fraud" for every single transaction  has 99% accuracy. But it catches zero fraud cases. It is completely useless.
 
 The metrics that actually matter are **precision**, **recall**, and **the cost of being wrong in each direction**.
 

@@ -30,7 +30,7 @@ A bad actor obtains stolen card details (from a data breach, phishing, or dark w
 - Order placed minutes after account creation
 - Payment method is a prepaid card (harder to trace)
 
-### What We Build
+### What I have Build
 
 A **Fraud Transaction Scorer** that assigns a probability (0.0 to 1.0) to each transaction. Above a configured threshold, the transaction is flagged for review or step-up authentication.
 
@@ -64,7 +64,7 @@ Merchants offer return policies to reduce purchase hesitation. Some customers ex
 - Account age (new accounts returning immediately = suspicious)
 - Number of returns in the last 30/60/90 days
 
-### What We Build
+### What I have Build
 
 A **Return Risk Scorer** that assigns a risk level (Low / Medium / High) to each return request. High-risk returns are flagged for manual review or require photo proof before approval.
 
@@ -94,68 +94,10 @@ If a merchant's chargeback ratio exceeds ~1%, they risk losing their payment gat
 - Merchants often don't know what evidence is needed or how to format it
 - Fighting every chargeback manually is not scalable
 
-### What We Build
+### What I have Build
 
 A **Chargeback Evidence Responder** that:
 1. Automatically pulls relevant evidence (delivery confirmation, IP logs, device fingerprint, login history, communication records)
 2. Scores the winnability of the dispute before investing time in it
 3. Formats the evidence into a structured response document
 
----
-
-## Problem 4: Coordinated Abuse Rings
-
-### What Happens
-
-Instead of individual fraud, some actors operate in coordinated groups:
-- Create dozens of fake accounts sharing the same device, IP range, or email pattern
-- Systematically exploit cashback offers, referral bonuses, or "new user" discounts
-- Coordinate buy-and-return schemes across multiple accounts to avoid detection thresholds
-- Use stolen card pools distributed across many accounts so no single account looks suspicious
-
-### Why It's Hard to Detect
-
-- Each individual account looks borderline, not clearly fraudulent
-- The signal is in the connections between accounts, not in any single account's behavior
-- Standard ML models look at each transaction in isolation and miss the network pattern
-
-### What We Build
-
-An **Abuse Ring Sentinel** that builds a graph of account relationships (shared device ID, shared IP, shared phone number, shared card BIN, shared address) and flags clusters of connected accounts that show coordinated suspicious behavior.
-
----
-
-## The Common Thread
-
-All four problems share the same structure:
-
-```
-Legitimate-looking action
-         ↓
-Merchant makes a loss-generating decision
-         ↓
-Merchant realizes the loss too late to recover
-```
-
-The goal is to insert a **risk signal** between the first and second step — early enough to change the decision, late enough to have sufficient data to be accurate.
-
----
-
-## The Evaluation Requirement
-
-Every detector must report:
-
-- **Precision**: Of all flagged cases, what fraction were actually risky?
-- **Recall**: Of all actually risky cases, what fraction did we catch?
-- **False positive cost**: Every legitimate case wrongly flagged has a real cost — customer frustration, lost sale, support load
-- **Threshold sensitivity**: How do precision and recall change as the decision threshold moves?
-
-A model that catches 100% of fraud by flagging every transaction has 100% recall but 0% utility. The honest number is the tradeoff.
-
----
-
-## Constraints
-
-- **Defense only**: The system recommends actions. It does not automatically block accounts, reverse payments, or penalize customers.
-- **Synthetic data**: All training and evaluation data is generated. No real customer, transaction, or merchant data is used.
-- **Explainability**: Every high-risk flag must be accompanied by the top features that drove the score — not just a number.
