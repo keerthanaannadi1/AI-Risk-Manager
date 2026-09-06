@@ -65,10 +65,17 @@ from src.chargeback_features import (
     FEATURE_COLUMNS         as CB_FEATURE_COLUMNS,
 )
 
+# Feedback & retraining pipeline
+from data.outcomes.feedback_store import (
+    write_feedback,
+    read_feedback,
+    feedback_summary,
+    VALID_OUTCOMES,
+)
 
-# ══════════════════════════════════════════════════════════════════════════════
+
+
 # API key authentication
-# ══════════════════════════════════════════════════════════════════════════════
 
 API_KEY        = os.environ.get("API_KEY", "")
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
@@ -90,9 +97,9 @@ def verify_api_key(key: Optional[str] = Security(api_key_header)) -> None:
         raise HTTPException(status_code=401, detail="Invalid or missing API key.")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+
 # Model loading — all three models loaded once at server startup
-# ══════════════════════════════════════════════════════════════════════════════
+
 
 def _resolve_model_path(env_var: str, default_relative: str) -> str:
     """Return model path from env variable, or fall back to default."""
@@ -143,9 +150,9 @@ CB_METRICS    = cb_model_obj["metrics"]
 logger.info(f"Chargeback model loaded:  {CB_MODEL_NAME}  threshold={CB_THRESHOLD}")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+
 # Risk label helpers
-# ══════════════════════════════════════════════════════════════════════════════
+
 
 def score_to_label(score: float) -> str:
     """Convert a probability to Low / Medium / High."""
@@ -200,19 +207,58 @@ EVIDENCE_LABELS = {
 }
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+
 # FastAPI app
-# ══════════════════════════════════════════════════════════════════════════════
+
 
 app = FastAPI(
     title="AI Risk Manager",
     description=(
-        "ML-powered risk scoring for merchants on payment platforms. "
-        "Detects return abuse (Phase 1), payment fraud (Phase 2), "
-        "and chargeback winability (Phase 3). "
-        "Defense-only system — scores and recommends, never blocks autonomously."
+        "ML-powered risk scoring for merchants on payment platforms.\n\n"
+        "## What This API Does\n"
+        "Detects three types of merchant losses:\n"
+        "- **Return Abuse** — wardrobing, swap fraud, serial returners\n"
+        "- **Payment Fraud** — stolen cards, account takeover, velocity abuse\n"
+        "- **Chargebacks** — scores dispute winability and provides evidence checklist\n\n"
+        "## Design Philosophy\n"
+        "- **Defense-only** — scores and recommends, never blocks autonomously\n"
+        "- **Honest evaluation** — precision, recall, AUPRC on held-out test sets\n"
+        "- **No accuracy metric** — useless on imbalanced fraud data\n\n"
+        "## Authentication\n"
+        "Set `API_KEY` environment variable to enable authentication.\n"
+        "If not set, server runs in open mode (no key required).\n\n"
+        "## Quick Start\n"
+        "1. Send a request to any scoring endpoint\n"
+        "2. Receive risk score, label, and recommendation\n"
+        "3. Use the recommendation to decide next action"
     ),
     version="3.0.0",
+    openapi_tags=[
+        {
+            "name": "Health",
+            "description": "System health checks and model status",
+        },
+        {
+            "name": "Return Risk",
+            "description": "Score return requests for abuse risk (Phase 1)",
+        },
+        {
+            "name": "Fraud Detection",
+            "description": "Score payment transactions for fraud risk (Phase 2)",
+        },
+        {
+            "name": "Chargeback Analysis",
+            "description": "Analyze chargeback disputes and evidence (Phase 3)",
+        },
+        {
+            "name": "Model Info",
+            "description": "View model metrics and thresholds",
+        },
+        {
+            "name": "Feedback",
+            "description": "Submit confirmed outcomes for retraining",
+        },
+    ],
 )
 
 
@@ -231,9 +277,9 @@ async def log_requests(request: Request, call_next):
     return response
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+
 # Shared response schemas
-# ══════════════════════════════════════════════════════════════════════════════
+
 
 class ScoreResponse(BaseModel):
     risk_score:     float = Field(..., description="Model confidence of risk (0.0 to 1.0)")
@@ -267,11 +313,37 @@ class ChargebackAnalysisResponse(BaseModel):
     scored_at:           str         = Field(..., description="ISO timestamp")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+
 # Phase 1 — Return Risk Scorer request schema
-# ══════════════════════════════════════════════════════════════════════════════
+
+
+# Risk score lookup tables (same values used during data generation)
+RETURN_CATEGORY_RISK = {
+    "electronics": 0.8,
+    "apparel":     0.6,
+    "books":       0.2,
+    "home":        0.4,
+    "luxury":      0.9,
+}
+
+RETURN_REASON_RISK = {
+    "defective":     0.3,
+    "wrong_item":    0.4,
+    "not_needed":    0.8,
+    "quality_issue": 0.5,
+    "changed_mind":  0.7,
+}
+
+# Order value above this is considered "high value" for no_images_high_value flag
+HIGH_VALUE_THRESHOLD = 1800.0
+# Account younger than this (days) is considered "new"
+NEW_ACCOUNT_THRESHOLD = 30
+# Return window (days) — return within last 3 days of this is "near deadline"
+RETURN_WINDOW_DAYS = 30
+
 
 class ReturnRequest(BaseModel):
+    # Raw fields only — the API computes all derived features internally
     customer_total_orders:     int   = Field(..., ge=0)
     customer_total_returns:    int   = Field(..., ge=0)
     customer_account_age_days: int   = Field(..., ge=0)
@@ -286,17 +358,6 @@ class ReturnRequest(BaseModel):
     images_submitted:          bool
     product_category:          str   = Field(..., description="books, home, apparel, electronics, luxury")
     merchant_return_rate:      float = Field(..., ge=0, le=1)
-    return_rate_lifetime:      float = Field(..., ge=0, le=1)
-    return_rate_30d:           float = Field(..., ge=0, le=1)
-    is_near_deadline:          bool
-    is_same_day_return:        bool
-    is_first_order:            bool
-    is_new_account:            bool
-    no_images_high_value:      bool
-    no_support_contact:        bool
-    category_risk_score:       float = Field(..., ge=0, le=1)
-    return_reason_risk:        float = Field(..., ge=0, le=1)
-    order_value_normalized:    float = Field(..., ge=0)
 
     @field_validator("payment_method")
     @classmethod
@@ -330,25 +391,46 @@ class ReturnRequest(BaseModel):
         "days_to_return": 28, "return_reason": "changed_mind",
         "support_contacted": False, "images_submitted": False,
         "product_category": "electronics", "merchant_return_rate": 0.12,
-        "return_rate_lifetime": 0.67, "return_rate_30d": 0.75,
-        "is_near_deadline": True, "is_same_day_return": False,
-        "is_first_order": False, "is_new_account": False,
-        "no_images_high_value": True, "no_support_contact": True,
-        "category_risk_score": 0.8, "return_reason_risk": 0.9,
-        "order_value_normalized": 1.94,
     }}}
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+
 # Phase 2 — Fraud Transaction Scorer request schema
-# ══════════════════════════════════════════════════════════════════════════════
+
+
+# Risk score lookup tables for fraud (same values used during data generation)
+FRAUD_CATEGORY_RISK = {
+    "electronics": 0.8,
+    "gift_cards":  0.9,
+    "luxury":      0.85,
+    "apparel":     0.4,
+    "books":       0.1,
+    "home":        0.3,
+}
+
+FRAUD_PAYMENT_RISK = {
+    "card":       0.9,
+    "upi":        0.3,
+    "netbanking": 0.2,
+    "wallet":     0.4,
+    "cod":        0.5,
+}
+
+# Thresholds for fraud feature computation
+FRAUD_HIGH_VALUE_THRESHOLD    = 10000.0  # order above this is high value
+FRAUD_NEW_ACCOUNT_THRESHOLD   = 30       # account age in days
+FRAUD_NIGHT_HOURS             = (0, 6)   # hours considered night (0am to 6am)
+FRAUD_HIGH_VELOCITY_THRESHOLD = 3        # orders in 1h to flag high velocity
+FRAUD_MULTIPLE_FAILS          = 2        # failed attempts to flag as multiple
+
 
 class TransactionRequest(BaseModel):
+    # Raw fields only — the API computes all derived features internally
     order_value:               float = Field(..., ge=0)
     product_category:          str   = Field(..., description="electronics, apparel, books, home, luxury, gift_cards")
     payment_method:            str   = Field(..., description="card, upi, netbanking, wallet, cod")
     hour_of_day:               int   = Field(..., ge=0, le=23)
-    day_of_week:               int   = Field(..., ge=0, le=6)
+    day_of_week:               int   = Field(..., ge=0, le=6, description="0=Monday, 6=Sunday")
     failed_attempts:           int   = Field(..., ge=0)
     is_vpn:                    bool
     customer_account_age_days: int   = Field(..., ge=0)
@@ -358,20 +440,9 @@ class TransactionRequest(BaseModel):
     customer_orders_1h:        int   = Field(..., ge=0)
     customer_orders_24h:       int   = Field(..., ge=0)
     merchant_fraud_rate:       float = Field(..., ge=0, le=1)
-    is_night_transaction:      bool
-    is_weekend:                bool
     is_new_device:             bool
     is_different_city:         bool
-    is_high_value:             bool
-    is_first_order:            bool
-    is_new_account:            bool
     address_mismatch:          bool
-    multiple_failed_attempts:  bool
-    high_velocity_1h:          bool
-    order_value_normalized:    float = Field(..., ge=0)
-    new_account_high_value_card: bool
-    payment_risk_score:        float = Field(..., ge=0, le=1)
-    category_risk_score:       float = Field(..., ge=0, le=1)
 
     @field_validator("payment_method")
     @classmethod
@@ -397,21 +468,35 @@ class TransactionRequest(BaseModel):
         "customer_avg_order_value": 1500.0, "customer_past_fraud_flags": 0,
         "customer_orders_1h": 6, "customer_orders_24h": 8,
         "merchant_fraud_rate": 0.08,
-        "is_night_transaction": True, "is_weekend": False,
         "is_new_device": True, "is_different_city": True,
-        "is_high_value": True, "is_first_order": False,
-        "is_new_account": True, "address_mismatch": True,
-        "multiple_failed_attempts": True, "high_velocity_1h": True,
-        "order_value_normalized": 12.0, "new_account_high_value_card": True,
-        "payment_risk_score": 0.9, "category_risk_score": 0.8,
+        "address_mismatch": True,
     }}}
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+
 # Phase 3 — Chargeback Evidence Responder request schema
-# ══════════════════════════════════════════════════════════════════════════════
+
+
+# Dispute difficulty lookup (same values used during data generation)
+CB_DISPUTE_DIFFICULTY = {
+    "not_received":          0.5,
+    "not_authorized":        0.8,
+    "not_as_described":      0.6,
+    "duplicate_charge":      0.2,
+    "credit_not_processed":  0.4,
+}
+
+# Thresholds for chargeback feature computation
+CB_HIGH_VALUE_THRESHOLD   = 5000.0  # order above this is high value
+CB_NEW_ACCOUNT_THRESHOLD  = 30      # account age in days
+CB_QUICK_DISPUTE_DAYS     = 3       # disputed within this many days = quick
+CB_LATE_DISPUTE_DAYS      = 60      # disputed after this many days = late
+CB_SERIAL_DISPUTER_COUNT  = 2       # past disputes >= this = serial disputer
+
 
 class ChargebackRequest(BaseModel):
+    # Raw fields only — the API computes all derived features internally
+
     # Transaction details
     order_value:      float = Field(..., ge=0, description="Order value in INR")
     product_category: str   = Field(..., description="electronics, apparel, books, home, luxury, gift_cards")
@@ -437,18 +522,6 @@ class ChargebackRequest(BaseModel):
 
     # Merchant
     merchant_chargeback_rate: float = Field(..., ge=0, le=1)
-
-    # Engineered signals
-    is_quick_dispute:       bool  = Field(..., description="Disputed within 3 days of transaction?")
-    is_late_dispute:        bool  = Field(..., description="Disputed after 60 days?")
-    is_high_value:          bool  = Field(..., description="Order value above Rs.5000?")
-    is_first_order:         bool  = Field(..., description="Customer's first order?")
-    is_new_account:         bool  = Field(..., description="Account less than 30 days old?")
-    is_serial_disputer:     bool  = Field(..., description="Customer has 2+ past disputes?")
-    is_cod:                 bool  = Field(..., description="Payment was cash on delivery?")
-    evidence_score:         int   = Field(..., ge=0, le=7, description="Count of evidence pieces available (0-7)")
-    dispute_difficulty:     float = Field(..., ge=0, le=1, description="Difficulty score of this dispute type (0.0 to 1.0)")
-    order_value_normalized: float = Field(..., ge=0, description="Order value divided by customer avg order value")
 
     @field_validator("payment_method")
     @classmethod
@@ -485,19 +558,13 @@ class ChargebackRequest(BaseModel):
         "customer_account_age_days": 400, "customer_total_orders": 15,
         "customer_past_disputes": 0, "customer_avg_order_value": 3000.0,
         "merchant_chargeback_rate": 0.04,
-        "is_quick_dispute": True, "is_late_dispute": False,
-        "is_high_value": True, "is_first_order": False,
-        "is_new_account": False, "is_serial_disputer": False,
-        "is_cod": False, "evidence_score": 4,
-        "dispute_difficulty": 0.5, "order_value_normalized": 2.83,
     }}}
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Routes
-# ══════════════════════════════════════════════════════════════════════════════
 
-@app.get("/", summary="Health check")
+# Routes
+
+@app.get("/", summary="Health check", tags=["Health"])
 def root():
     """Check that the API is running and all three models are loaded."""
     return {
@@ -512,7 +579,7 @@ def root():
 
 
 @app.get("/model/return/info", response_model=ModelInfoResponse,
-         summary="Return risk model metadata and metrics")
+         summary="Return risk model metadata and metrics", tags=["Model Info"])
 def return_model_info(_: None = Security(verify_api_key)):
     return ModelInfoResponse(
         model_name=RETURN_MODEL_NAME, threshold=RETURN_THRESHOLD,
@@ -531,7 +598,7 @@ def return_model_info(_: None = Security(verify_api_key)):
 
 
 @app.get("/model/fraud/info", response_model=ModelInfoResponse,
-         summary="Fraud model metadata and metrics")
+         summary="Fraud model metadata and metrics", tags=["Model Info"])
 def fraud_model_info(_: None = Security(verify_api_key)):
     return ModelInfoResponse(
         model_name=FRAUD_MODEL_NAME, threshold=FRAUD_THRESHOLD,
@@ -550,7 +617,7 @@ def fraud_model_info(_: None = Security(verify_api_key)):
 
 
 @app.get("/model/chargeback/info", response_model=ModelInfoResponse,
-         summary="Chargeback model metadata and metrics")
+         summary="Chargeback model metadata and metrics", tags=["Model Info"])
 def chargeback_model_info(_: None = Security(verify_api_key)):
     return ModelInfoResponse(
         model_name=CB_MODEL_NAME, threshold=CB_THRESHOLD,
@@ -569,13 +636,39 @@ def chargeback_model_info(_: None = Security(verify_api_key)):
 
 
 @app.post("/score/return", response_model=ScoreResponse,
-          summary="Score a return request (Phase 1)")
+          summary="Score a return request (Phase 1)", tags=["Return Risk"])
 def score_return(request: ReturnRequest, _: None = Security(verify_api_key)):
     """Score a return request as Low / Medium / High risk."""
     try:
+        # ── Compute derived features from raw inputs ───────────────────────────
+        total_orders  = request.customer_total_orders
+        total_returns = request.customer_total_returns
+
+        return_rate_lifetime = (
+            total_returns / total_orders if total_orders > 0 else 0.0
+        )
+        return_rate_30d = (
+            request.customer_returns_30d / request.customer_orders_30d
+            if request.customer_orders_30d > 0 else 0.0
+        )
+        is_near_deadline    = request.days_to_return >= (RETURN_WINDOW_DAYS - 3)
+        is_same_day_return  = request.days_to_return == 0
+        is_first_order      = total_orders <= 1
+        is_new_account      = request.customer_account_age_days < NEW_ACCOUNT_THRESHOLD
+        no_images_high_value = (
+            not request.images_submitted and request.order_value > HIGH_VALUE_THRESHOLD
+        )
+        no_support_contact   = not request.support_contacted
+        category_risk_score  = RETURN_CATEGORY_RISK[request.product_category]
+        return_reason_risk   = RETURN_REASON_RISK[request.return_reason]
+        order_value_normalized = (
+            request.order_value / request.customer_avg_order_value
+            if request.customer_avg_order_value > 0 else 1.0
+        )
+
         row = {
-            "customer_total_orders":     request.customer_total_orders,
-            "customer_total_returns":    request.customer_total_returns,
+            "customer_total_orders":     total_orders,
+            "customer_total_returns":    total_returns,
             "customer_account_age_days": request.customer_account_age_days,
             "customer_returns_30d":      request.customer_returns_30d,
             "customer_orders_30d":       request.customer_orders_30d,
@@ -588,17 +681,17 @@ def score_return(request: ReturnRequest, _: None = Security(verify_api_key)):
             "images_submitted":          int(request.images_submitted),
             "product_category":          RETURN_CATEGORY_ENCODING[request.product_category],
             "merchant_return_rate":      request.merchant_return_rate,
-            "return_rate_lifetime":      request.return_rate_lifetime,
-            "return_rate_30d":           request.return_rate_30d,
-            "is_near_deadline":          int(request.is_near_deadline),
-            "is_same_day_return":        int(request.is_same_day_return),
-            "is_first_order":            int(request.is_first_order),
-            "is_new_account":            int(request.is_new_account),
-            "no_images_high_value":      int(request.no_images_high_value),
-            "no_support_contact":        int(request.no_support_contact),
-            "category_risk_score":       request.category_risk_score,
-            "return_reason_risk":        request.return_reason_risk,
-            "order_value_normalized":    request.order_value_normalized,
+            "return_rate_lifetime":      return_rate_lifetime,
+            "return_rate_30d":           return_rate_30d,
+            "is_near_deadline":          int(is_near_deadline),
+            "is_same_day_return":        int(is_same_day_return),
+            "is_first_order":            int(is_first_order),
+            "is_new_account":            int(is_new_account),
+            "no_images_high_value":      int(no_images_high_value),
+            "no_support_contact":        int(no_support_contact),
+            "category_risk_score":       category_risk_score,
+            "return_reason_risk":        return_reason_risk,
+            "order_value_normalized":    order_value_normalized,
         }
         X          = pd.DataFrame([row])[RETURN_FEATURE_COLUMNS]
         risk_score = float(RETURN_MODEL.predict_proba(X)[0][1])
@@ -616,10 +709,28 @@ def score_return(request: ReturnRequest, _: None = Security(verify_api_key)):
 
 
 @app.post("/score/transaction", response_model=ScoreResponse,
-          summary="Score a payment transaction for fraud (Phase 2)")
+          summary="Score a payment transaction for fraud (Phase 2)", tags=["Fraud Detection"])
 def score_transaction(request: TransactionRequest, _: None = Security(verify_api_key)):
     """Score a payment transaction as Low / Medium / High fraud risk."""
     try:
+        # ── Compute derived features from raw inputs ───────────────────────────
+        is_night_transaction     = FRAUD_NIGHT_HOURS[0] <= request.hour_of_day < FRAUD_NIGHT_HOURS[1]
+        is_weekend               = request.day_of_week >= 5
+        is_high_value            = request.order_value > FRAUD_HIGH_VALUE_THRESHOLD
+        is_first_order           = request.customer_total_past_orders == 0
+        is_new_account           = request.customer_account_age_days < FRAUD_NEW_ACCOUNT_THRESHOLD
+        multiple_failed_attempts = request.failed_attempts >= FRAUD_MULTIPLE_FAILS
+        high_velocity_1h         = request.customer_orders_1h >= FRAUD_HIGH_VELOCITY_THRESHOLD
+        order_value_normalized   = (
+            request.order_value / request.customer_avg_order_value
+            if request.customer_avg_order_value > 0 else 1.0
+        )
+        new_account_high_value_card = (
+            is_new_account and is_high_value and request.payment_method == "card"
+        )
+        payment_risk_score  = FRAUD_PAYMENT_RISK[request.payment_method]
+        category_risk_score = FRAUD_CATEGORY_RISK[request.product_category]
+
         row = {
             "order_value":               request.order_value,
             "product_category":          FRAUD_CATEGORY_ENCODING[request.product_category],
@@ -635,20 +746,20 @@ def score_transaction(request: TransactionRequest, _: None = Security(verify_api
             "customer_orders_1h":        request.customer_orders_1h,
             "customer_orders_24h":       request.customer_orders_24h,
             "merchant_fraud_rate":       request.merchant_fraud_rate,
-            "is_night_transaction":      int(request.is_night_transaction),
-            "is_weekend":                int(request.is_weekend),
+            "is_night_transaction":      int(is_night_transaction),
+            "is_weekend":                int(is_weekend),
             "is_new_device":             int(request.is_new_device),
             "is_different_city":         int(request.is_different_city),
-            "is_high_value":             int(request.is_high_value),
-            "is_first_order":            int(request.is_first_order),
-            "is_new_account":            int(request.is_new_account),
+            "is_high_value":             int(is_high_value),
+            "is_first_order":            int(is_first_order),
+            "is_new_account":            int(is_new_account),
             "address_mismatch":          int(request.address_mismatch),
-            "multiple_failed_attempts":  int(request.multiple_failed_attempts),
-            "high_velocity_1h":          int(request.high_velocity_1h),
-            "order_value_normalized":    request.order_value_normalized,
-            "new_account_high_value_card": int(request.new_account_high_value_card),
-            "payment_risk_score":        request.payment_risk_score,
-            "category_risk_score":       request.category_risk_score,
+            "multiple_failed_attempts":  int(multiple_failed_attempts),
+            "high_velocity_1h":          int(high_velocity_1h),
+            "order_value_normalized":    order_value_normalized,
+            "new_account_high_value_card": int(new_account_high_value_card),
+            "payment_risk_score":        payment_risk_score,
+            "category_risk_score":       category_risk_score,
         }
         X          = pd.DataFrame([row])[FRAUD_FEATURE_COLUMNS]
         risk_score = float(FRAUD_MODEL.predict_proba(X)[0][1])
@@ -666,7 +777,7 @@ def score_transaction(request: TransactionRequest, _: None = Security(verify_api
 
 
 @app.post("/chargeback/analyze", response_model=ChargebackAnalysisResponse,
-          summary="Analyze a chargeback dispute and return evidence report (Phase 3)")
+          summary="Analyze a chargeback dispute and return evidence report (Phase 3)", tags=["Chargeback Analysis"])
 def analyze_chargeback(request: ChargebackRequest, _: None = Security(verify_api_key)):
     """
     Analyze a chargeback dispute and return:
@@ -678,6 +789,30 @@ def analyze_chargeback(request: ChargebackRequest, _: None = Security(verify_api
     Use the evidence checklist to decide what to submit to the bank.
     """
     try:
+        # ── Compute derived features from raw inputs ───────────────────────────
+        evidence_flags = {
+            "delivery_confirmed":         request.delivery_confirmed,
+            "customer_signed_delivery":   request.customer_signed_delivery,
+            "otp_used":                   request.otp_used,
+            "ip_logs_available":          request.ip_logs_available,
+            "order_confirmation_sent":    request.order_confirmation_sent,
+            "refund_issued":              request.refund_issued,
+            "customer_contacted_support": request.customer_contacted_support,
+        }
+        evidence_score  = sum(1 for v in evidence_flags.values() if v)
+        is_quick_dispute = request.days_to_dispute <= CB_QUICK_DISPUTE_DAYS
+        is_late_dispute  = request.days_to_dispute > CB_LATE_DISPUTE_DAYS
+        is_high_value    = request.order_value > CB_HIGH_VALUE_THRESHOLD
+        is_first_order   = request.customer_total_orders <= 1
+        is_new_account   = request.customer_account_age_days < CB_NEW_ACCOUNT_THRESHOLD
+        is_serial_disputer = request.customer_past_disputes >= CB_SERIAL_DISPUTER_COUNT
+        is_cod           = request.payment_method == "cod"
+        dispute_difficulty = CB_DISPUTE_DIFFICULTY[request.dispute_reason]
+        order_value_normalized = (
+            request.order_value / request.customer_avg_order_value
+            if request.customer_avg_order_value > 0 else 1.0
+        )
+
         row = {
             "order_value":               request.order_value,
             "product_category":          CB_CATEGORY_ENCODING[request.product_category],
@@ -697,16 +832,16 @@ def analyze_chargeback(request: ChargebackRequest, _: None = Security(verify_api
             "customer_past_disputes":    request.customer_past_disputes,
             "customer_avg_order_value":  request.customer_avg_order_value,
             "merchant_chargeback_rate":  request.merchant_chargeback_rate,
-            "is_quick_dispute":          int(request.is_quick_dispute),
-            "is_late_dispute":           int(request.is_late_dispute),
-            "is_high_value":             int(request.is_high_value),
-            "is_first_order":            int(request.is_first_order),
-            "is_new_account":            int(request.is_new_account),
-            "is_serial_disputer":        int(request.is_serial_disputer),
-            "is_cod":                    int(request.is_cod),
-            "evidence_score":            request.evidence_score,
-            "dispute_difficulty":        request.dispute_difficulty,
-            "order_value_normalized":    request.order_value_normalized,
+            "is_quick_dispute":          int(is_quick_dispute),
+            "is_late_dispute":           int(is_late_dispute),
+            "is_high_value":             int(is_high_value),
+            "is_first_order":            int(is_first_order),
+            "is_new_account":            int(is_new_account),
+            "is_serial_disputer":        int(is_serial_disputer),
+            "is_cod":                    int(is_cod),
+            "evidence_score":            evidence_score,
+            "dispute_difficulty":        dispute_difficulty,
+            "order_value_normalized":    order_value_normalized,
         }
 
         X                = pd.DataFrame([row])[CB_FEATURE_COLUMNS]
@@ -715,16 +850,6 @@ def analyze_chargeback(request: ChargebackRequest, _: None = Security(verify_api
         recommendation   = CB_RECOMMENDATIONS[winability_label]
 
         # ── Build evidence checklist ───────────────────────────────────────────
-        evidence_flags = {
-            "delivery_confirmed":         request.delivery_confirmed,
-            "customer_signed_delivery":   request.customer_signed_delivery,
-            "otp_used":                   request.otp_used,
-            "ip_logs_available":          request.ip_logs_available,
-            "order_confirmation_sent":    request.order_confirmation_sent,
-            "refund_issued":              request.refund_issued,
-            "customer_contacted_support": request.customer_contacted_support,
-        }
-
         evidence_present = [
             EVIDENCE_LABELS[k] for k, v in evidence_flags.items() if v
         ]
@@ -734,13 +859,13 @@ def analyze_chargeback(request: ChargebackRequest, _: None = Security(verify_api
 
         logger.info(
             f"chargeback/analyze  score={winability_score:.4f}  "
-            f"label={winability_label}  evidence={len(evidence_present)}/7"
+            f"label={winability_label}  evidence={evidence_score}/7"
         )
         return ChargebackAnalysisResponse(
             winability_score=round(winability_score, 4),
             winability_label=winability_label,
             recommendation=recommendation,
-            evidence_score=len(evidence_present),
+            evidence_score=evidence_score,
             evidence_present=evidence_present,
             evidence_missing=evidence_missing,
             model_name=CB_MODEL_NAME,
@@ -751,3 +876,240 @@ def analyze_chargeback(request: ChargebackRequest, _: None = Security(verify_api
     except Exception as e:
         logger.error(f"chargeback/analyze failed: {e}")
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 5 — Feedback & Retraining Pipeline
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── Feedback request schemas ──────────────────────────────────────────────────
+
+class ReturnFeedbackRequest(BaseModel):
+    original_id:     str   = Field(..., description="The return/order ID from the original request")
+    risk_score:      float = Field(..., ge=0, le=1, description="The score the model gave at prediction time")
+    predicted_label: str   = Field(..., description="The label the model returned: Low, Medium, or High")
+    actual_outcome:  str   = Field(..., description="What actually happened: abusive or legitimate")
+
+    @field_validator("actual_outcome")
+    @classmethod
+    def validate_outcome(cls, v):
+        valid = VALID_OUTCOMES["return"]
+        if v.lower() not in valid:
+            raise ValueError(f"actual_outcome must be one of: {valid}")
+        return v.lower()
+
+    @field_validator("predicted_label")
+    @classmethod
+    def validate_label(cls, v):
+        valid = ["Low", "Medium", "High"]
+        if v not in valid:
+            raise ValueError(f"predicted_label must be one of: {valid}")
+        return v
+
+    model_config = {"json_schema_extra": {"example": {
+        "original_id": "RET-20260901-001",
+        "risk_score": 0.87,
+        "predicted_label": "High",
+        "actual_outcome": "abusive",
+    }}}
+
+
+class FraudFeedbackRequest(BaseModel):
+    original_id:     str   = Field(..., description="The transaction ID from the original request")
+    risk_score:      float = Field(..., ge=0, le=1, description="The score the model gave at prediction time")
+    predicted_label: str   = Field(..., description="The label the model returned: Low, Medium, or High")
+    actual_outcome:  str   = Field(..., description="What actually happened: fraud or legitimate")
+
+    @field_validator("actual_outcome")
+    @classmethod
+    def validate_outcome(cls, v):
+        valid = VALID_OUTCOMES["fraud"]
+        if v.lower() not in valid:
+            raise ValueError(f"actual_outcome must be one of: {valid}")
+        return v.lower()
+
+    @field_validator("predicted_label")
+    @classmethod
+    def validate_label(cls, v):
+        valid = ["Low", "Medium", "High"]
+        if v not in valid:
+            raise ValueError(f"predicted_label must be one of: {valid}")
+        return v
+
+    model_config = {"json_schema_extra": {"example": {
+        "original_id": "TX-20260901-001",
+        "risk_score": 0.95,
+        "predicted_label": "High",
+        "actual_outcome": "fraud",
+    }}}
+
+
+class ChargebackFeedbackRequest(BaseModel):
+    original_id:     str   = Field(..., description="The dispute ID from the original request")
+    risk_score:      float = Field(..., ge=0, le=1, description="The winability score the model gave")
+    predicted_label: str   = Field(..., description="The label the model returned: Weak, Moderate, or Strong")
+    actual_outcome:  str   = Field(..., description="What actually happened: won or lost")
+
+    @field_validator("actual_outcome")
+    @classmethod
+    def validate_outcome(cls, v):
+        valid = VALID_OUTCOMES["chargeback"]
+        if v.lower() not in valid:
+            raise ValueError(f"actual_outcome must be one of: {valid}")
+        return v.lower()
+
+    @field_validator("predicted_label")
+    @classmethod
+    def validate_label(cls, v):
+        valid = ["Weak", "Moderate", "Strong"]
+        if v not in valid:
+            raise ValueError(f"predicted_label must be one of: {valid}")
+        return v
+
+    model_config = {"json_schema_extra": {"example": {
+        "original_id": "CB-20260901-001",
+        "risk_score": 0.91,
+        "predicted_label": "Strong",
+        "actual_outcome": "won",
+    }}}
+
+
+# ── Feedback response schema ───────────────────────────────────────────────────
+
+class FeedbackResponse(BaseModel):
+    record_id:       str   = Field(..., description="Unique ID for this feedback record")
+    original_id:     str   = Field(..., description="The original transaction/return/dispute ID")
+    module:          str   = Field(..., description="Which module this feedback is for")
+    risk_score:      float = Field(..., description="The model score at prediction time")
+    predicted_label: str   = Field(..., description="What the model predicted")
+    actual_outcome:  str   = Field(..., description="What actually happened")
+    is_correct:      int   = Field(..., description="1 if model was correct, 0 if wrong")
+    submitted_at:    str   = Field(..., description="When this feedback was submitted")
+    message:         str   = Field(..., description="Confirmation message")
+
+
+# ── Feedback endpoints ─────────────────────────────────────────────────────────
+
+@app.post("/feedback/return", response_model=FeedbackResponse,
+          summary="Submit confirmed outcome for a return request (Phase 1)", tags=["Feedback"])
+def feedback_return(request: ReturnFeedbackRequest, _: None = Security(verify_api_key)):
+    """
+    Submit a confirmed outcome for a previously scored return request.
+
+    Call this endpoint when the actual outcome of a return is known —
+    e.g. after a manual review confirms the return was abusive, or after
+    the item arrives back and is confirmed legitimate.
+
+    This feedback is stored and used in the next model retraining cycle.
+    """
+    try:
+        record = write_feedback(
+            module          = "return",
+            original_id     = request.original_id,
+            risk_score      = request.risk_score,
+            predicted_label = request.predicted_label,
+            actual_outcome  = request.actual_outcome,
+        )
+        correct_str = "correct" if record["is_correct"] else "incorrect"
+        logger.info(
+            f"feedback/return  id={request.original_id}  "
+            f"predicted={request.predicted_label}  actual={request.actual_outcome}  "
+            f"correct={record['is_correct']}"
+        )
+        return FeedbackResponse(
+            **record,
+            message=f"Feedback recorded. Model prediction was {correct_str}.",
+        )
+    except Exception as e:
+        logger.error(f"feedback/return failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to record feedback: {str(e)}")
+
+
+@app.post("/feedback/transaction", response_model=FeedbackResponse,
+          summary="Submit confirmed outcome for a fraud transaction (Phase 2)", tags=["Feedback"])
+def feedback_transaction(request: FraudFeedbackRequest, _: None = Security(verify_api_key)):
+    """
+    Submit a confirmed outcome for a previously scored transaction.
+
+    Call this endpoint when fraud is confirmed (e.g. chargeback received,
+    bank confirms stolen card) or when a flagged transaction is cleared as
+    legitimate after manual review.
+
+    This feedback is stored and used in the next model retraining cycle.
+    """
+    try:
+        record = write_feedback(
+            module          = "fraud",
+            original_id     = request.original_id,
+            risk_score      = request.risk_score,
+            predicted_label = request.predicted_label,
+            actual_outcome  = request.actual_outcome,
+        )
+        correct_str = "correct" if record["is_correct"] else "incorrect"
+        logger.info(
+            f"feedback/transaction  id={request.original_id}  "
+            f"predicted={request.predicted_label}  actual={request.actual_outcome}  "
+            f"correct={record['is_correct']}"
+        )
+        return FeedbackResponse(
+            **record,
+            message=f"Feedback recorded. Model prediction was {correct_str}.",
+        )
+    except Exception as e:
+        logger.error(f"feedback/transaction failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to record feedback: {str(e)}")
+
+
+@app.post("/feedback/chargeback", response_model=FeedbackResponse,
+          summary="Submit confirmed outcome for a chargeback dispute (Phase 3)", tags=["Feedback"])
+def feedback_chargeback(request: ChargebackFeedbackRequest, _: None = Security(verify_api_key)):
+    """
+    Submit a confirmed outcome for a previously analyzed chargeback dispute.
+
+    Call this endpoint after the bank resolves the dispute — either the
+    merchant won (chargeback reversed) or lost (chargeback confirmed).
+
+    This feedback is stored and used in the next model retraining cycle.
+    """
+    try:
+        record = write_feedback(
+            module          = "chargeback",
+            original_id     = request.original_id,
+            risk_score      = request.risk_score,
+            predicted_label = request.predicted_label,
+            actual_outcome  = request.actual_outcome,
+        )
+        correct_str = "correct" if record["is_correct"] else "incorrect"
+        logger.info(
+            f"feedback/chargeback  id={request.original_id}  "
+            f"predicted={request.predicted_label}  actual={request.actual_outcome}  "
+            f"correct={record['is_correct']}"
+        )
+        return FeedbackResponse(
+            **record,
+            message=f"Feedback recorded. Model prediction was {correct_str}.",
+        )
+    except Exception as e:
+        logger.error(f"feedback/chargeback failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to record feedback: {str(e)}")
+
+
+@app.get("/feedback/summary",
+         summary="Summary of all feedback collected so far", tags=["Feedback"])
+def get_feedback_summary(_: None = Security(verify_api_key)):
+    """
+    Returns how much feedback has been collected per module and
+    how accurate the model has been on confirmed outcomes.
+    Useful for deciding when to trigger a retraining run.
+    """
+    try:
+        summary = feedback_summary()
+        return {
+            "feedback_summary": summary,
+            "message": (
+                "Run `python src/retrain.py` to retrain models using this feedback."
+            ),
+        }
+    except Exception as e:
+        logger.error(f"feedback/summary failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get summary: {str(e)}")
