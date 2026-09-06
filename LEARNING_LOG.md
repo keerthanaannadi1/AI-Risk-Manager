@@ -5,9 +5,9 @@
 
 ---
 
-## Session 1 — 2026-08-31
+## Session 1 — 2026-08-31.
 
-### What We Built Today
+### What I Built Today
 
 #### Step 1.1 — Data Generation (`data/generate_data.py`)
 
