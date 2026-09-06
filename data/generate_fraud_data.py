@@ -74,12 +74,11 @@ CITIES = [
 ]
 
 
-# ══════════════════════════════════════════════════════════════════════════════
 # Customer pool
 # Each customer has a fixed profile: usual city, usual device, account age, etc.
 # This lets us detect anomalies — a transaction from a different device or city
 # is suspicious only because we know the customer's normal behaviour.
-# ══════════════════════════════════════════════════════════════════════════════
+
 
 def build_customer_pool(n: int) -> dict:
     customers = {}
@@ -113,10 +112,9 @@ def build_customer_pool(n: int) -> dict:
     return customers
 
 
-# ══════════════════════════════════════════════════════════════════════════════
 # Merchant pool
 # Each merchant has a category focus and a baseline fraud rate
-# ══════════════════════════════════════════════════════════════════════════════
+
 
 def build_merchant_pool(n: int) -> dict:
     merchants = {}
@@ -128,12 +126,10 @@ def build_merchant_pool(n: int) -> dict:
         }
     return merchants
 
-
-# ══════════════════════════════════════════════════════════════════════════════
 # Record assembler
 # Takes all the raw components and builds the full row dict.
 # Also computes all engineered features so EDA can use them directly.
-# ══════════════════════════════════════════════════════════════════════════════
+
 
 def _build_record(
     record_id, cid, mid, customer, merchant,
@@ -251,11 +247,9 @@ def _build_record(
         "is_fraud":       is_fraud,        # target variable
     }
 
-
-# ══════════════════════════════════════════════════════════════════════════════
 # Legitimate transaction generator
 # Normal customers: shop during the day, use known devices, ship to own address
-# ══════════════════════════════════════════════════════════════════════════════
+
 
 def generate_legitimate_record(record_id, cid, mid, customer, merchant):
     category    = random.choices(
@@ -297,11 +291,9 @@ def generate_legitimate_record(record_id, cid, mid, customer, merchant):
         is_fraud=False, fraud_pattern="none",
     )
 
-
-# ══════════════════════════════════════════════════════════════════════════════
 # Fraud pattern generators
 # Each pattern has distinct signals the model should learn to detect
-# ══════════════════════════════════════════════════════════════════════════════
+
 
 def generate_fraudulent_record(record_id, cid, mid, customer, merchant):
     # Pick one of four fraud patterns randomly
@@ -406,11 +398,9 @@ def generate_fraudulent_record(record_id, cid, mid, customer, merchant):
         is_fraud=True, fraud_pattern=pattern,
     )
 
-
-# ══════════════════════════════════════════════════════════════════════════════
 # Main generation function
 # Builds the full dataset by calling legitimate and fraud generators
-# ══════════════════════════════════════════════════════════════════════════════
+
 
 def generate(n: int = NUM_RECORDS) -> pd.DataFrame:
     print(f"  Building customer pool ({NUM_CUSTOMERS} customers) ...")
@@ -456,11 +446,8 @@ def generate(n: int = NUM_RECORDS) -> pd.DataFrame:
     df = df.sample(frac=1, random_state=SEED).reset_index(drop=True)
     return df
 
-
-# ══════════════════════════════════════════════════════════════════════════════
 # Validation report
 # Prints a summary after generation so we can verify the data looks right
-# ══════════════════════════════════════════════════════════════════════════════
 
 def validate(df: pd.DataFrame) -> None:
     SEP = "=" * 58
@@ -524,10 +511,7 @@ def validate(df: pd.DataFrame) -> None:
 
     print(f"\n{SEP}\n")
 
-
-# ══════════════════════════════════════════════════════════════════════════════
 # Entry point
-# ══════════════════════════════════════════════════════════════════════════════
 
 def main():
     print("\n  AI Risk Manager — Synthetic Data Generator")
