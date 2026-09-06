@@ -105,9 +105,8 @@ MODULE_CONFIG = {
 SEP = "=" * 64
 
 
-# ══════════════════════════════════════════════════════════════════════════════
 # Helpers
-# ══════════════════════════════════════════════════════════════════════════════
+
 
 def _timestamp() -> str:
     """Return a filesystem-safe UTC timestamp string."""
@@ -198,9 +197,9 @@ def _build_xgb_lgb_ensemble(scale_pos_weight):
     return {"XGBoost": xgb_model, "LightGBM": lgb_model, "Ensemble": ensemble}
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+
 # Core: merge feedback into training data
-# ══════════════════════════════════════════════════════════════════════════════
+
 
 def _merge_feedback(module: str, df_original: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     """
@@ -249,9 +248,9 @@ def _merge_feedback(module: str, df_original: pd.DataFrame, cfg: dict) -> pd.Dat
     return df_augmented
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+
 # Core: retrain one module
-# ══════════════════════════════════════════════════════════════════════════════
+
 
 def retrain_module(module: str, dry_run: bool = False) -> dict:
     """
@@ -370,9 +369,9 @@ def retrain_module(module: str, dry_run: bool = False) -> dict:
     }
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+
 # Entry point
-# ══════════════════════════════════════════════════════════════════════════════
+
 
 def main():
     parser = argparse.ArgumentParser(description="AI Risk Manager — Retraining Pipeline")
