@@ -1,10 +1,9 @@
 # AI Risk Manager — Project Report
 
-**Project Name:** AI Risk Manager  
-**Developer:** CSE Admin  
+**Project Name:** AI Risk Manager    
 **Date:** September 2026  
 **Version:** 3.0.0  
-**Location:** `/home/cse-admin/Documents/razorpay/AI-Risk-Manager`
+
 
 ---
 
