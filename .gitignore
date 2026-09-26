@@ -39,3 +39,8 @@ Thumbs.db
 # ── Environment variables ─────────────────────────────────────────────────────
 .env
 .env.*
+
+# ── Logs and Run Data ─────────────────────────────────────────────────────────
+SESSION_LOG_*.md
+prompt_log.csv
+team4_duck1*
